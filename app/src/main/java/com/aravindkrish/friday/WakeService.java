@@ -19,6 +19,8 @@ import org.vosk.Model;
 import org.vosk.Recognizer;
 
 public class WakeService extends Service {
+    public static final String ACTION_WAKE_DETECTED="com.aravindkrish.friday.WAKE_DETECTED";
+    public static final String EXTRA_RECOGNISED_TEXT="recognised_text";
     private static final String TAG="FridayWake", CHANNEL="friday_listener";
     private static final String GEMINI_PACKAGE="com.google.android.apps.bard";
     private static final String MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip";
@@ -43,28 +45,28 @@ public class WakeService extends Service {
         Intent gemini=geminiIntent();
         PendingIntent ai=gemini!=null?PendingIntent.getActivity(this,1,gemini,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE):null;
         Notification.Builder b=Build.VERSION.SDK_INT>=26?new Notification.Builder(this,CHANNEL):new Notification.Builder(this);
-        b.setContentTitle("Friday is listening").setContentText("Wake phrase detection runs on this device").setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(pi).setOngoing(true);
+        b.setContentTitle("Friday is listening").setContentText("Wake-word debug mode: say Friday, then tap Open Gemini").setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(pi).setOngoing(true);
         if(ai!=null)b.addAction(new Notification.Action.Builder(null,"Open Gemini",ai).build());
         return b.build();
+    }
+    private void notifyWakeDetected(String recognised){
+        Intent event=new Intent(ACTION_WAKE_DETECTED);
+        event.setPackage(getPackageName());
+        event.putExtra(EXTRA_RECOGNISED_TEXT,recognised);
+        sendBroadcast(event);
+        Log.i(TAG,"WAKE_WORD_DETECTED: "+recognised);
     }
     private void listen(){Model model=null;Recognizer recognizer=null;try{
         File dir=new File(getFilesDir(),"vosk-model-small-en-us-0.15");if(!new File(dir,"am").exists())downloadModel(dir);
         model=new Model(dir.getAbsolutePath());recognizer=new Recognizer(model,16000.0f,"[\"friday\"]");
         int min=AudioRecord.getMinBufferSize(16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT);int size=Math.max(min,4096);
         recorder=new AudioRecord(MediaRecorder.AudioSource.MIC,16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,size);if(recorder.getState()!=AudioRecord.STATE_INITIALIZED)throw new IOException("Microphone could not be initialized");
-        recorder.startRecording();byte[] data=new byte[size];while(running){int count=recorder.read(data,0,data.length);if(count>0&&recognizer.acceptWaveForm(data,count)){String phrase=new JSONObject(recognizer.getResult()).optString("text","");if(phrase.toLowerCase().contains("friday"))launchGemini();}}
+        recorder.startRecording();byte[] data=new byte[size];while(running){int count=recorder.read(data,0,data.length);if(count>0&&recognizer.acceptWaveForm(data,count)){String phrase=new JSONObject(recognizer.getResult()).optString("text","");if(phrase.toLowerCase().contains("friday"))notifyWakeDetected(phrase);}}
     }catch(Exception e){Log.e(TAG,"Wake listener stopped",e);stopSelf();}finally{running=false;try{if(recorder!=null){recorder.stop();recorder.release();}}catch(Exception ignored){}try{if(recognizer!=null)recognizer.close();}catch(Exception ignored){}try{if(model!=null)model.close();}catch(Exception ignored){}}}
     private void downloadModel(File destination)throws Exception{
         File zip=new File(getCacheDir(),"vosk-model.zip");HttpURLConnection c=(HttpURLConnection)new URL(MODEL_URL).openConnection();c.setConnectTimeout(20000);c.setReadTimeout(60000);c.connect();try(InputStream in=c.getInputStream();FileOutputStream out=new FileOutputStream(zip)){byte[] b=new byte[8192];int n;while((n=in.read(b))!=-1)out.write(b,0,n);}finally{c.disconnect();}
         File temp=new File(getFilesDir(),"model-unpack");temp.mkdirs();try(ZipInputStream zis=new ZipInputStream(new FileInputStream(zip))){ZipEntry e;byte[] b=new byte[8192];while((e=zis.getNextEntry())!=null){File f=new File(temp,e.getName());if(!f.getCanonicalPath().startsWith(temp.getCanonicalPath()+File.separator))throw new IOException("Invalid model archive");if(e.isDirectory())f.mkdirs();else{File p=f.getParentFile();if(p!=null)p.mkdirs();try(FileOutputStream out=new FileOutputStream(f)){int n;while((n=zis.read(b))!=-1)out.write(b,0,n);}}zis.closeEntry();}}
         File unpacked=new File(temp,"vosk-model-small-en-us-0.15");if(!unpacked.renameTo(destination))throw new IOException("Could not install speech model");zip.delete();
-    }
-    private void launchGemini(){
-        try{
-            Intent i=geminiIntent();
-            if(i==null){Log.e(TAG,"Gemini app package not found: "+GEMINI_PACKAGE);return;}
-            startActivity(i);
-        }catch(Exception e){Log.e(TAG,"Could not launch Gemini",e);}
     }
     @Override public void onDestroy(){running=false;if(recorder!=null)try{recorder.stop();}catch(Exception ignored){}super.onDestroy();}
     @Override public IBinder onBind(Intent intent){return null;}
